@@ -22,7 +22,6 @@ def dlnamespace():
         _dlmstop()
 
 
-
 @dataclass
 class Preload:
     name: bytes
@@ -58,9 +57,13 @@ class PreloadedCDLL(ctypes.CDLL):
 
     """
 
-    def __init__(self, name: bytes, preloads: list[Preload] | None = None,
-                 use_errno: bool = False, use_last_error: bool = False):
-
+    def __init__(
+        self,
+        name: bytes,
+        preloads: list[Preload] | None = None,
+        use_errno: bool = False,
+        use_last_error: bool = False,
+    ):
         class _FuncPtr(_CFuncPtr):
             _flags_ = self._func_flags_
             _restype_ = self._func_restype_

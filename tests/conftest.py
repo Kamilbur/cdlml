@@ -34,7 +34,7 @@ def foobar_handles():
         malloc_so_files: A namedtuple with paths to the built shared libraries.
     """
     root = _project_root()
-    test_source_root = root / 'tests' / 'malloc_test'
+    test_source_root = root / "tests" / "malloc_test"
 
     env = os.environ.copy()
     jobs = min(os.cpu_count(), 2)
@@ -59,8 +59,4 @@ def foobar_handles():
 
     mapping_enabled = ctypes.c_int.in_dll(foo.malloc, "mapping_enabled")
 
-    yield fbhandles(
-        foo=foo,
-        bar=bar,
-        enabled=mapping_enabled
-    )
+    yield fbhandles(foo=foo, bar=bar, enabled=mapping_enabled)

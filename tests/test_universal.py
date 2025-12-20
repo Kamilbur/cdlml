@@ -16,9 +16,9 @@ def enabled(enabled_flag):
         enabled_flag.value = original
 
 
-
 def _bared(bar, n, ns, enabled_flag):
     return bar.bar(n)
+
 
 def _fooed(foo, n, ns, enabled_flag):
     if enabled_flag.value and n > 1:
@@ -229,10 +229,23 @@ def case_15(fooed, bared, enabled_flag):
 
 
 test_cases = [
-    case_01, case_02, case_03, case_04, case_05,
-    case_06, case_07, case_08, case_09, case_10,
-    case_11, case_12, case_13, case_14, case_15,
+    case_01,
+    case_02,
+    case_03,
+    case_04,
+    case_05,
+    case_06,
+    case_07,
+    case_08,
+    case_09,
+    case_10,
+    case_11,
+    case_12,
+    case_13,
+    case_14,
+    case_15,
 ]
+
 
 @pytest.mark.parametrize("test_case", test_cases, ids=[c.__name__ for c in test_cases])
 def test_universal(test_case, foobar_handles, capfd):
@@ -240,8 +253,10 @@ def test_universal(test_case, foobar_handles, capfd):
     enabled_flag.value = 0
 
     ns = []
+
     def fooed(n):
         return _fooed(foo, n, ns, enabled_flag)
+
     def bared(n):
         return _bared(bar, n, ns, enabled_flag)
 
@@ -249,4 +264,3 @@ def test_universal(test_case, foobar_handles, capfd):
 
     out, err = capfd.readouterr()
     assert err == "".join(["[interpose] malloc(size={})\n".format(n * sizeof_int) for n in ns])
-
