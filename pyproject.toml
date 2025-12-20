@@ -27,3 +27,8 @@ where = ["src"]
 [tool.ruff.lint.per-file-ignores]
 "src/cdlml/__init__.py" = ["PLC2701"]
 
+[tool.cibuildwheel]
+build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux_*"
+test-command = 'python -c "import cdlml, _cdlml; print(\"ok\")"'
+
