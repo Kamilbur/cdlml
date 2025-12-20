@@ -24,11 +24,77 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 
-[tool.ruff.lint.per-file-ignores]
-"src/cdlml/__init__.py" = ["PLC2701"]
-
 [tool.cibuildwheel]
 build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
 skip = "*-musllinux_*"
 test-command = 'python -c "import cdlml, _cdlml; print(\"ok\")"'
+
+
+
+[tool.ruff.lint.per-file-ignores]
+"src/cdlml/__init__.py" = ["PLC2701"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+respect-gitignore = true
+extend-exclude = ["build", "dist", ".venv", "venv", ".mypy_cache", ".pytest_cache", "node_modules", "migrations"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
+docstring-code-format = true
+docstring-code-line-length = 100
+
+[lint]
+preview = true
+select = [
+  # Core style & correctness
+  "E", "W", "F", "I",           # pycodestyle, warnings, pyflakes, isort
+  "B",                          # flake8-bugbear
+  "UP",                         # pyupgrade
+  "N",                          # pep8-naming
+  "PL",                         # pylint (selected checks reimplemented)
+  # Documentation & typing
+#  "D",                          # pydocstyle
+#  "ANN",                        # flake8-annotations
+  # Imports & code quality
+  "C4",                         # flake8-comprehensions
+  "SIM",                        # flake8-simplify
+  "TID",                        # flake8-tidy-imports
+  "ERA",                        # eradicate (commented-out code)
+  "PTH",                        # prefer pathlib over os.path
+  "TCH",                        # move typing-only imports under TYPE_CHECKING
+  "EM",                         # better exception messages
+  "TRY",                        # try/except best practices
+  "PGH",                        # pygrep-hooks (useful misc checks)
+  "G",                          # logging format issues
+  "PT",                         # pytest style
+  # Security & Ruff-specific
+  "S",                          # bandit (security)
+  "RUF"                         # ruff-specific rules
+]
+
+# Tweak a few noisy/contradictory rules for sane strictness.
+ignore = [
+  "D100",
+  # Docstring style: pick one of D211/D203 and D212/D213 pairs.
+  "D203",   # one-blank-line-before-class (conflicts with D211)
+  "D213",   # multi-line-summary-second-line (conflicts with D212)
+
+  # Typing: allow `self`/`cls` to be untyped, and allow `Any` in annotations when needed.
+  "ANN401", # Any used in annotations
+]
+
+per-file-ignores = { "tests/**" = ["S101", "D", "ANN"] }
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.isort]
+combine-as-imports = true
+force-sort-within-sections = true
+
 

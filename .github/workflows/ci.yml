@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed for creating GitHub Releases on tag builds
+
+jobs:
+  lint:
+    name: Lint (ruff + pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Ruff (lint)
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "check --output-format=github ."
+
+      - name: Ruff (format)
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "format --check ."
+
+      - name: pre-commit
+        uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: "--all-files"
+
+  test:
+    name: Tests (pytest) on ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: "pip"
+
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .
+          python -m pip install pytest
+
+      - name: Run tests
+        run: |
+          python -m pytest -q
+
+  build_wheels:
+    name: Build wheels (${{ matrix.os }})
+    needs: [lint, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.3.0
+        with:
+          output-dir: wheelhouse
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  build_sdist:
+    name: Build sdist
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Build sdist
+        run: |
+          python -m pip install -U pip
+          python -m pip install build
+          python -m build --sdist
+
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  github_release:
+    name: GitHub Release (attach wheels + sdist)
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download sdist artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: sdist
+          path: dist
+
+      - name: Create release + upload assets
+        uses: softprops/action-gh-release@v2.3.2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+
