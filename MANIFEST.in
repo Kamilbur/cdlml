@@ -1,0 +1,3 @@
+include README.md LICENSE pyproject.toml setup.py
+recursive-include csrc *.c *.h
+recursive-include src *.py *.c *.h
