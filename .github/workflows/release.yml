@@ -1,0 +1,115 @@
+name: Release (wheels + simple index)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build_wheels:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pypa/cibuildwheel@v3.3.0
+        with:
+          output-dir: wheelhouse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  build_sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install -U pip build
+          python -m build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  release_and_pages:
+    name: Create GitHub Release + publish simple index
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v5
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v5
+        with:
+          name: sdist
+          path: dist
+
+      - name: Create/Update GitHub Release + upload assets
+        uses: softprops/action-gh-release@v2.3.2
+        with:
+          generate_release_notes: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+
+      # Publish PEP 503 “simple” index to gh-pages, regenerated ONLY on tags
+      - name: Generate PEP 503 HTML (latest only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          REPO="${GITHUB_REPOSITORY}"
+          PROJECT="cdlml"
+
+          mkdir -p site/simple/"${PROJECT}"
+
+          # root simple index
+          cat > site/simple/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en"><head><meta charset="utf-8"><title>Simple index</title></head><body>
+          HTML
+          echo "<a href=\"${PROJECT}/\">${PROJECT}</a><br/>" >> site/simple/index.html
+          echo "</body></html>" >> site/simple/index.html
+
+          # project page: ONLY latest tag’s files
+          cat > "site/simple/${PROJECT}/index.html" <<HTML
+          <!doctype html>
+          <html lang="en"><head><meta charset="utf-8"><title>${PROJECT}</title></head><body>
+          HTML
+
+          for f in dist/*.whl dist/*.tar.gz; do
+            [ -e "$f" ] || continue
+            bn="$(basename "$f")"
+            url="https://github.com/${REPO}/releases/download/${TAG}/${bn}"
+            h="$(sha256sum "$f" | awk '{print $1}')"
+            echo "<a href=\"${url}#sha256=${h}\">${bn}</a><br/>" >> "site/simple/${PROJECT}/index.html"
+          done
+
+          echo "</body></html>" >> "site/simple/${PROJECT}/index.html"
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: site
+          force_orphan: true
+
