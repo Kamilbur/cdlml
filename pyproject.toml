@@ -9,6 +9,7 @@ version = "0.1.0"
 description = "Linux based ctypes.CDLL extension that enables per-instance LD_PRELOAD-like behavior for shared libraries."
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = []
 license = { text = "GPL-3.0" }
 authors = [{ name = "Kamil Burkiewicz" }]
 classifiers = [
@@ -16,6 +17,9 @@ classifiers = [
   "Programming Language :: C",
   "Operating System :: Linux",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

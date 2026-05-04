@@ -57,6 +57,6 @@ def foobar_handles():
     foo = cdlml.PreloadedCDLL(libfoo, preloads=preloads)
     bar = cdlml.PreloadedCDLL(libbar)
 
-    mapping_enabled = ctypes.c_int.in_dll(foo.malloc, "mapping_enabled")
+    mapping_enabled = cdlml.get_var(foo.malloc, ctypes.c_int, "mapping_enabled")
 
     yield fbhandles(foo=foo, bar=bar, enabled=mapping_enabled)

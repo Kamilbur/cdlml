@@ -1,5 +1,7 @@
 #include "cdlml.h"
 
+#ifdef __linux__
+# if defined(__GLIBC__)
 
 static Lmid_t _namespace = LM_ID_NEWLM;
 
@@ -37,3 +39,5 @@ cdlml_open(const char *filename)
         return cdlml_open_next(filename);
     }
 }
+# endif // __GLIBC__
+#endif // __linux__
