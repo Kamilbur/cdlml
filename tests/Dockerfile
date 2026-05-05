@@ -8,6 +8,7 @@ RUN apk add --no-cache \
     musl-dev \
     make \
     linux-headers \
+    libffi-dev \
     vim \
     gdb
 
@@ -22,6 +23,6 @@ ENV CXXFLAGS="-g3 -O0 -fno-omit-frame-pointer -fno-optimize-sibling-calls"
 ENV LDFLAGS="-g"
 RUN python3 -m pip install --break-system-packages -e .[dev] -v
 
-RUN make -C tests/malloc_test clean && make -C tests/malloc_test
+RUN make -C tests clean && make -C tests
 
 CMD ["python3", "-m", "pytest", "tests/"]

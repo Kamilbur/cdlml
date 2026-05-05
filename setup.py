@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,12 +29,31 @@ SERVER_SRC = Path("csrc/cdlml_server.c")
 SERVER_OUT = Path("src/cdlml/cdlml_server.exe")
 
 
+def _get_ffi_flags():
+    if shutil.which("pkg-config"):
+        try:
+            cflags = subprocess.check_output(
+                ["pkg-config", "--cflags", "libffi"], stderr=subprocess.DEVNULL
+            ).decode().split()
+            libs = subprocess.check_output(
+                ["pkg-config", "--libs", "libffi"], stderr=subprocess.DEVNULL
+            ).decode().split()
+            return cflags, libs
+        except subprocess.CalledProcessError:
+            pass
+    return [], ["-lffi"]
+
+
 def build_server() -> None:
     if not SERVER_SRC.exists():
         print(f"WARNING: {SERVER_SRC} not found, skipping cdlml_server build", file=sys.stderr)
         return
+    ffi_cflags, ffi_libs = _get_ffi_flags()
     flags = ["-ggdb", "-O0"] if _DEBUG else ["-O2"]
-    cmd = ["gcc", *flags, "-Wall", "-Wextra", str(SERVER_SRC), "-o", str(SERVER_OUT), "-ldl"]
+    cmd = [
+        "gcc", *flags, *ffi_cflags, "-Wall", "-Wextra",
+        str(SERVER_SRC), "-o", str(SERVER_OUT), "-ldl", *ffi_libs,
+    ]
     print(f"building cdlml_server: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 

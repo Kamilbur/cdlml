@@ -64,6 +64,7 @@ _TYPE_U64 = 0x04
 _TYPE_F64 = 0x05
 _TYPE_PTR = 0x06
 _TYPE_CSTR = 0x07
+_TYPE_F32 = 0x08
 
 _CTYPES_TO_TYPE: dict = {
     ctypes.c_bool: _TYPE_U32,
@@ -81,7 +82,7 @@ _CTYPES_TO_TYPE: dict = {
     ctypes.c_ulong: _TYPE_U64,
     ctypes.c_uint64: _TYPE_U64,
     ctypes.c_size_t: _TYPE_U64,
-    ctypes.c_float: _TYPE_F64,
+    ctypes.c_float: _TYPE_F32,
     ctypes.c_double: _TYPE_F64,
     ctypes.c_void_p: _TYPE_PTR,
     ctypes.c_char_p: _TYPE_CSTR,
@@ -167,6 +168,8 @@ class RemoteFuncProxy:
                 parts.append(bytes([arg_type]) + struct.pack("<I", int(arg) & 0xFFFFFFFF))
             elif arg_type in (_TYPE_I64, _TYPE_U64, _TYPE_PTR):
                 parts.append(bytes([arg_type]) + struct.pack("<Q", int(arg) & 0xFFFFFFFFFFFFFFFF))
+            elif arg_type == _TYPE_F32:
+                parts.append(bytes([arg_type]) + struct.pack("<f", float(arg)))
             elif arg_type == _TYPE_F64:
                 parts.append(bytes([arg_type]) + struct.pack("<d", float(arg)))
             elif arg_type == _TYPE_CSTR:
@@ -195,6 +198,8 @@ class RemoteFuncProxy:
             elif ret_type in (_TYPE_I32, _TYPE_U32):
                 raw = struct.unpack("<I", _read_exact(r, 4))[0]
                 result = -(0x100000000 - raw) if ret_type == _TYPE_I32 and raw & 0x80000000 else raw
+            elif ret_type == _TYPE_F32:
+                result = struct.unpack("<f", _read_exact(r, 4))[0]
             elif ret_type in (_TYPE_I64, _TYPE_U64, _TYPE_PTR, _TYPE_F64, _TYPE_CSTR):
                 raw = struct.unpack("<Q", _read_exact(r, 8))[0]
                 if ret_type == _TYPE_F64:
@@ -324,8 +329,6 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
 
     Limitations vs GLIBCPreloadedCDLL:
     - ctypes.c_int.in_dll(lib, name) does not work; use get_var(lib, ctype, name).
-    - Float/double function arguments require libffi (not bundled); only
-      integer and pointer arguments are supported via the trampoline.
     - Concurrent calls from multiple threads on the same instance are
       serialised by an internal lock.
     """

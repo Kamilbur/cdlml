@@ -8,10 +8,8 @@ import ctypes
 import pytest
 
 
-def _project_root() -> Path:
-    # Adjust if your conftest.py is not under tests/
-    # Common layout: repo_root/tests/conftest.py -> parents[1] == repo_root
-    return Path(__file__).resolve().parents[1]
+def _here() -> Path:
+    return Path(__file__).resolve().parent
 
 
 def first_ok(items, key, value):
@@ -33,19 +31,18 @@ def foobar_handles():
     Returns:
         malloc_so_files: A namedtuple with paths to the built shared libraries.
     """
-    root = _project_root()
-    test_source_root = root / "tests" / "malloc_test"
+    here = _here()
 
     env = os.environ.copy()
     jobs = min(os.cpu_count(), 2)
 
-    subprocess.run(["make", f"-j{jobs}"], cwd=test_source_root, env=env, check=True)
+    subprocess.run(["make", f"-j{jobs}"], cwd=here, env=env, check=True)
 
-    so_paths = sorted(test_source_root.rglob("*.so"))
+    so_paths = sorted(here.rglob("*.so"))
     so_names = [p.name for p in so_paths]
 
     if not so_names:
-        pytest.fail(f"`make` produced no .so files under: {root}")
+        pytest.fail(f"`make` produced no .so files under: {here}")
 
     libmalloc = first_ok(so_paths, key=lambda p: p.name, value="libmalloc.so")
     libfoo = first_ok(so_paths, key=lambda p: p.name, value="libfoo.so")

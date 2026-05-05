@@ -35,11 +35,13 @@
  *   0x05 F64   — 8 bytes (raw double bits);
  *   0x06 PTR   — 8 bytes (pointer as u64)
  *   0x07 CSTR  — [u32 len][bytes] for args; u64 addr for return
+ *   0x08 F32   — 4 bytes (raw float bits)
  */
 
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <errno.h>
+#include <ffi.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,27 +222,33 @@ static void *main_handle = NULL;
 #define TYPE_F64  0x05
 #define TYPE_PTR  0x06
 #define TYPE_CSTR 0x07
+#define TYPE_F32  0x08
 
-/* ---- Function call trampolines ----
- * Only integer/pointer args supported (x86-64 integer registers). */
-typedef uint64_t (*fn0_t)(void);
-typedef uint64_t (*fn1_t)(uint64_t);
-typedef uint64_t (*fn2_t)(uint64_t, uint64_t);
-typedef uint64_t (*fn3_t)(uint64_t, uint64_t, uint64_t);
-typedef uint64_t (*fn4_t)(uint64_t, uint64_t, uint64_t, uint64_t);
-typedef uint64_t (*fn5_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
-typedef uint64_t (*fn6_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+/* ---- libffi dispatch helpers ---- */
+#define MAX_ARGS 32
 
-static uint64_t dispatch_call(void *fn, int nargs, uint64_t *args) {
-    switch (nargs) {
-    case 0: return ((fn0_t)fn)();
-    case 1: return ((fn1_t)fn)(args[0]);
-    case 2: return ((fn2_t)fn)(args[0], args[1]);
-    case 3: return ((fn3_t)fn)(args[0], args[1], args[2]);
-    case 4: return ((fn4_t)fn)(args[0], args[1], args[2], args[3]);
-    case 5: return ((fn5_t)fn)(args[0], args[1], args[2], args[3], args[4]);
-    case 6: return ((fn6_t)fn)(args[0], args[1], args[2], args[3], args[4], args[5]);
-    default: return 0;
+union arg_storage {
+    int32_t  i32;
+    uint32_t u32;
+    int64_t  i64;
+    uint64_t u64;
+    float    f32;
+    double   f64;
+    void    *ptr;
+};
+
+static ffi_type *type_code_to_ffi(uint8_t type) {
+    switch (type) {
+    case TYPE_I32:  return &ffi_type_sint32;
+    case TYPE_U32:  return &ffi_type_uint32;
+    case TYPE_I64:  return &ffi_type_sint64;
+    case TYPE_U64:  return &ffi_type_uint64;
+    case TYPE_F32:  return &ffi_type_float;
+    case TYPE_F64:  return &ffi_type_double;
+    case TYPE_PTR:  return &ffi_type_pointer;
+    case TYPE_CSTR: return &ffi_type_pointer;
+    case TYPE_VOID:
+    default:        return &ffi_type_void;
     }
 }
 
@@ -306,28 +314,60 @@ static void handle_call_func(int in_fd, int out_fd) {
     if (read_exact(in_fd, &nargs_byte, 1) != 0) orig_exit_(1);
 
     int nargs = (int)nargs_byte;
-    if (nargs > 6) nargs = 6;
+    if (nargs > MAX_ARGS) nargs = MAX_ARGS;
 
-    uint64_t args[6];
+    union arg_storage arg_vals[MAX_ARGS];
+    ffi_type *arg_types[MAX_ARGS];
+    void *arg_ptrs[MAX_ARGS];
     n_str_args = 0;
 
     for (int i = 0; i < nargs; i++) {
         uint8_t type;
         if (read_exact(in_fd, &type, 1) != 0) orig_exit_(1);
+        arg_types[i] = type_code_to_ffi(type);
+        arg_ptrs[i] = &arg_vals[i];
 
         switch (type) {
-        case TYPE_I32:
+        case TYPE_I32: {
+            uint32_t v;
+            if (read_u32(in_fd, &v) != 0) orig_exit_(1);
+            arg_vals[i].i32 = (int32_t)v;
+            break;
+        }
         case TYPE_U32: {
             uint32_t v;
             if (read_u32(in_fd, &v) != 0) orig_exit_(1);
-            args[i] = (uint64_t)v;
+            arg_vals[i].u32 = v;
             break;
         }
-        case TYPE_I64:
-        case TYPE_U64:
-        case TYPE_PTR:
+        case TYPE_F32: {
+            uint32_t bits;
+            if (read_u32(in_fd, &bits) != 0) orig_exit_(1);
+            memcpy(&arg_vals[i].f32, &bits, 4);
+            break;
+        }
+        case TYPE_I64: {
+            uint64_t v;
+            if (read_u64(in_fd, &v) != 0) orig_exit_(1);
+            arg_vals[i].i64 = (int64_t)v;
+            break;
+        }
+        case TYPE_U64: {
+            uint64_t v;
+            if (read_u64(in_fd, &v) != 0) orig_exit_(1);
+            arg_vals[i].u64 = v;
+            break;
+        }
         case TYPE_F64: {
-            if (read_u64(in_fd, &args[i]) != 0) orig_exit_(1);
+            uint64_t bits;
+            if (read_u64(in_fd, &bits) != 0) orig_exit_(1);
+            memcpy(&arg_vals[i].f64, &bits, 8);
+            break;
+        }
+        case TYPE_PTR: {
+            uint64_t v;
+            if (read_u64(in_fd, &v) != 0) orig_exit_(1);
+            arg_vals[i].ptr = (void *)(uintptr_t)v;
             break;
         }
         case TYPE_CSTR: {
@@ -344,11 +384,11 @@ static void handle_call_func(int in_fd, int out_fd) {
             s[slen] = '\0';
             if (n_str_args < MAX_STR_ARGS)
                 str_arg_bufs[n_str_args++] = s;
-            args[i] = (uint64_t)(uintptr_t)s;
+            arg_vals[i].ptr = s;
             break;
         }
         default:
-            args[i] = 0;
+            arg_vals[i].u64 = 0;
             break;
         }
     }
@@ -363,7 +403,22 @@ static void handle_call_func(int in_fd, int out_fd) {
         return;
     }
 
-    uint64_t result = dispatch_call(sym, nargs, args);
+    ffi_cif cif;
+    ffi_type *rtype = ret_type == TYPE_VOID ? &ffi_type_void : type_code_to_ffi(ret_type);
+
+    if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned int)nargs,
+                     rtype, arg_types) != FFI_OK) {
+        free_str_args();
+        send_err(out_fd, "ffi_prep_cif failed");
+        return;
+    }
+
+    /* Return storage: ffi_arg covers integer/pointer returns (>=8 bytes on LP64).
+     * float/double overlap its low bytes on little-endian; read via fval/dval. */
+    union { ffi_arg ival; float fval; double dval; } ret;
+    memset(&ret, 0, sizeof(ret));
+
+    ffi_call(&cif, FFI_FN(sym), &ret, arg_ptrs);
     free_str_args();
 
     send_ok(out_fd);
@@ -373,15 +428,26 @@ static void handle_call_func(int in_fd, int out_fd) {
         break;
     case TYPE_I32:
     case TYPE_U32:
-        write_u32(out_fd, (uint32_t)result);
+        write_u32(out_fd, (uint32_t)ret.ival);
         break;
+    case TYPE_F32: {
+        uint32_t bits;
+        memcpy(&bits, &ret.fval, 4);
+        write_u32(out_fd, bits);
+        break;
+    }
     case TYPE_I64:
     case TYPE_U64:
     case TYPE_PTR:
-    case TYPE_F64:
     case TYPE_CSTR:
-        write_u64(out_fd, result);
+        write_u64(out_fd, (uint64_t)ret.ival);
         break;
+    case TYPE_F64: {
+        uint64_t bits;
+        memcpy(&bits, &ret.dval, 8);
+        write_u64(out_fd, bits);
+        break;
+    }
     default:
         break;
     }
