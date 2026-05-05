@@ -123,6 +123,24 @@ class RemoteVar:
         self._ctype = ctype
         self._size = ctypes.sizeof(ctype)
 
+        # Detect if this is a pointer or array type to determine indexing behavior
+        self._is_ptr = hasattr(ctype, "_type_") and not hasattr(ctype, "_length_")
+        self._is_arr = hasattr(ctype, "_length_")
+
+        if self._is_ptr or self._is_arr:
+            self._base_type = ctype._type_
+        else:
+            self._base_type = ctype
+
+    def _get_base_addr(self) -> int:
+        if self._is_ptr:
+            # For pointers, we must first read the pointer value stored at self._addr
+            with open(f"/proc/{self._pid}/mem", "rb") as f:
+                f.seek(self._addr)
+                data = f.read(ctypes.sizeof(ctypes.c_void_p))
+            return struct.unpack("<Q" if ctypes.sizeof(ctypes.c_void_p) == 8 else "<I", data)[0]
+        return self._addr
+
     @property
     def value(self):
         with open(f"/proc/{self._pid}/mem", "rb") as f:
@@ -135,6 +153,22 @@ class RemoteVar:
         data = bytes(self._ctype(v))
         with open(f"/proc/{self._pid}/mem", "r+b") as f:
             f.seek(self._addr)
+            f.write(data)
+
+    def __getitem__(self, offset: int):
+        base_addr = self._get_base_addr()
+        stride = ctypes.sizeof(self._base_type)
+        with open(f"/proc/{self._pid}/mem", "rb") as f:
+            f.seek(base_addr + offset * stride)
+            data = f.read(stride)
+        return self._base_type.from_buffer_copy(data).value
+
+    def __setitem__(self, offset: int, v) -> None:
+        base_addr = self._get_base_addr()
+        stride = ctypes.sizeof(self._base_type)
+        data = bytes(self._base_type(v))
+        with open(f"/proc/{self._pid}/mem", "r+b") as f:
+            f.seek(base_addr + offset * stride)
             f.write(data)
 
 
