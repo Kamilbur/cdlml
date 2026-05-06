@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import os
 import pathlib
 import select
+import signal
 import struct
 import subprocess
 import threading
@@ -88,6 +89,8 @@ _TYPE_PTR = 0x06
 _TYPE_CSTR = 0x07
 _TYPE_F32 = 0x08
 
+_CARGOBJECT_TYPE = type(ctypes.byref(ctypes.c_int()))
+
 _CTYPES_TO_TYPE: dict = {
     ctypes.c_bool: _TYPE_U32,
     ctypes.c_int8: _TYPE_I32,
@@ -110,16 +113,6 @@ _CTYPES_TO_TYPE: dict = {
     ctypes.c_char_p: _TYPE_CSTR,
     None: _TYPE_VOID,
 }
-
-
-def _read_exact(f, n: int) -> bytes:
-    buf = b""
-    while len(buf) < n:
-        chunk = f.read(n - len(buf))
-        if not chunk:
-            raise EOFError("cdlml_server closed unexpectedly")
-        buf += chunk
-    return buf
 
 
 def _find_server_binary() -> str:
@@ -238,6 +231,7 @@ class RemoteFuncProxy:
         name_b = self._name.encode()
         ret_type = _CTYPES_TO_TYPE.get(self.restype, _TYPE_I64)
         argtypes = self.argtypes or []
+        sync_refs = _collect_sync_refs(args)
 
         parts = [
             bytes([_OP_CALL_FUNC]),
@@ -247,6 +241,16 @@ class RemoteFuncProxy:
         ]
 
         for i, arg in enumerate(args):
+            if isinstance(arg, _CARGOBJECT_TYPE) or (
+                hasattr(arg, "contents") and not hasattr(arg, "_server")
+            ):
+                msg = (
+                    "ctypes pointer points to Python process memory; "
+                    "use cdlml.byref(obj, cdll=lib) or cdlml.pointer(obj, cdll=lib) "
+                    "for fallback calls"
+                )
+                raise TypeError(msg)
+
             arg_type = (
                 _CTYPES_TO_TYPE.get(argtypes[i], _TYPE_I64) if i < len(argtypes) else _TYPE_I64
             )
@@ -281,11 +285,14 @@ class RemoteFuncProxy:
 
         with self._server._lock:
             self._server._send(b"".join(parts))
-            r = self._server._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._server._read_exact(1, f"call {self._name} status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack(
+                    "<I", self._server._read_exact(4, f"call {self._name} error length")
+                )[0]
+                msg = self._server._read_exact(
+                    msg_len, f"call {self._name} error message"
+                ).decode("utf-8", errors="replace")
                 self._server._drain_streams()
                 raise OSError(msg)
 
@@ -293,12 +300,18 @@ class RemoteFuncProxy:
             if ret_type == _TYPE_VOID:
                 pass
             elif ret_type in (_TYPE_I32, _TYPE_U32):
-                raw = struct.unpack("<I", _read_exact(r, 4))[0]
+                raw = struct.unpack(
+                    "<I", self._server._read_exact(4, f"call {self._name} i32 result")
+                )[0]
                 result = -(0x100000000 - raw) if ret_type == _TYPE_I32 and raw & 0x80000000 else raw
             elif ret_type == _TYPE_F32:
-                result = struct.unpack("<f", _read_exact(r, 4))[0]
+                result = struct.unpack(
+                    "<f", self._server._read_exact(4, f"call {self._name} f32 result")
+                )[0]
             elif ret_type in (_TYPE_I64, _TYPE_U64, _TYPE_PTR, _TYPE_F64, _TYPE_CSTR):
-                raw = struct.unpack("<Q", _read_exact(r, 8))[0]
+                raw = struct.unpack(
+                    "<Q", self._server._read_exact(8, f"call {self._name} u64 result")
+                )[0]
                 if ret_type == _TYPE_F64:
                     result = struct.unpack("<d", struct.pack("<Q", raw))[0]
                 elif ret_type == _TYPE_I64 and raw & 0x8000000000000000:
@@ -307,6 +320,8 @@ class RemoteFuncProxy:
                     result = raw
 
             self._server._drain_streams()
+        for ref in sync_refs:
+            ref._sync_back()
         return result
 
 
@@ -469,6 +484,7 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
 
         self._w = os.fdopen(rpc_in_w, "wb")
         self._r = os.fdopen(rpc_out_r, "rb")
+        self._server = self
         self._stdout_fd = self._proc.stdout.fileno()
         self._stderr_fd = self._proc.stderr.fileno()
         self._lock = threading.Lock()
@@ -507,6 +523,43 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
                     break
                 os.write(dst_fd, chunk)
 
+    def _read_available(self, fd: int) -> bytes:
+        chunks = []
+        while select.select([fd], [], [], 0)[0]:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def _server_status(self) -> str:
+        status = self._proc.poll()
+        if status is None:
+            return "still running"
+        if status < 0:
+            try:
+                sig = signal.Signals(-status).name
+            except ValueError:
+                sig = f"signal {-status}"
+            return f"terminated by {sig} ({status})"
+        return f"exited with status {status}"
+
+    def _read_exact(self, n: int, op: str) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = self._r.read(n - len(buf))
+            if not chunk:
+                stdout = self._read_available(self._stdout_fd).decode("utf-8", errors="replace")
+                stderr = self._read_available(self._stderr_fd).decode("utf-8", errors="replace")
+                msg = (
+                    f"cdlml_server closed unexpectedly during {op}; "
+                    f"server {self._server_status()}; "
+                    f"stdout={stdout!r}; stderr={stderr!r}"
+                )
+                raise EOFError(msg)
+            buf += chunk
+        return buf
+
     def _rpc_load_lib(self, path: bytes, *, is_main: bool) -> None:
         payload = (
             bytes([_OP_LOAD_LIB])
@@ -516,11 +569,12 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
         )
         with self._lock:
             self._send(payload)
-            r = self._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._read_exact(1, "load library status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack("<I", self._read_exact(4, "load library error length"))[0]
+                msg = self._read_exact(msg_len, "load library error message").decode(
+                    "utf-8", errors="replace"
+                )
                 self._drain_streams()
                 raise OSError(f"cdlml_server load failed: {msg}")
             self._drain_streams()
@@ -529,14 +583,17 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
         name_b = name.encode() if isinstance(name, str) else name
         with self._lock:
             self._send(bytes([_OP_GET_VAR]) + struct.pack("<I", len(name_b)) + name_b)
-            r = self._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._read_exact(1, f"get var {name!r} status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack(
+                    "<I", self._read_exact(4, f"get var {name!r} error length")
+                )[0]
+                msg = self._read_exact(msg_len, f"get var {name!r} error message").decode(
+                    "utf-8", errors="replace"
+                )
                 self._drain_streams()
                 raise OSError(msg)
-            addr = struct.unpack("<Q", _read_exact(r, 8))[0]
+            addr = struct.unpack("<Q", self._read_exact(8, f"get var {name!r} address"))[0]
             self._drain_streams()
         return RemoteVar(self._proc.pid, addr, ctype, server=self)
 
@@ -544,14 +601,15 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
         payload = bytes([_OP_ALLOC]) + struct.pack("<Q", size)
         with self._lock:
             self._send(payload)
-            r = self._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._read_exact(1, "alloc status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack("<I", self._read_exact(4, "alloc error length"))[0]
+                msg = self._read_exact(msg_len, "alloc error message").decode(
+                    "utf-8", errors="replace"
+                )
                 self._drain_streams()
                 raise OSError(msg)
-            addr = struct.unpack("<Q", _read_exact(r, 8))[0]
+            addr = struct.unpack("<Q", self._read_exact(8, "alloc address"))[0]
             self._drain_streams()
             return addr
 
@@ -559,11 +617,12 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
         payload = bytes([_OP_FREE]) + struct.pack("<Q", addr)
         with self._lock:
             self._send(payload)
-            r = self._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._read_exact(1, "free status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack("<I", self._read_exact(4, "free error length"))[0]
+                msg = self._read_exact(msg_len, "free error message").decode(
+                    "utf-8", errors="replace"
+                )
                 self._drain_streams()
                 raise OSError(msg)
             self._drain_streams()
@@ -572,14 +631,15 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
         payload = bytes([_OP_READ_MEM]) + struct.pack("<QI", addr, size)
         with self._lock:
             self._send(payload)
-            r = self._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._read_exact(1, "read memory status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack("<I", self._read_exact(4, "read memory error length"))[0]
+                msg = self._read_exact(msg_len, "read memory error message").decode(
+                    "utf-8", errors="replace"
+                )
                 self._drain_streams()
                 raise OSError(msg)
-            data = _read_exact(r, size)
+            data = self._read_exact(size, "read memory data")
             self._drain_streams()
             return data
 
@@ -588,11 +648,12 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
         payload = bytes([_OP_WRITE_MEM]) + struct.pack("<QI", addr, size) + data
         with self._lock:
             self._send(payload)
-            r = self._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._read_exact(1, "write memory status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack("<I", self._read_exact(4, "write memory error length"))[0]
+                msg = self._read_exact(msg_len, "write memory error message").decode(
+                    "utf-8", errors="replace"
+                )
                 self._drain_streams()
                 raise OSError(msg)
             self._drain_streams()
@@ -601,11 +662,12 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
         payload = bytes([_OP_MEMMOVE]) + struct.pack("<QQQ", dst, src, count)
         with self._lock:
             self._send(payload)
-            r = self._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._read_exact(1, "memmove status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack("<I", self._read_exact(4, "memmove error length"))[0]
+                msg = self._read_exact(msg_len, "memmove error message").decode(
+                    "utf-8", errors="replace"
+                )
                 self._drain_streams()
                 raise OSError(msg)
             self._drain_streams()
@@ -614,11 +676,12 @@ class FallbackPreloadedCDLL(_PreloadedCDLLBase):
         payload = bytes([_OP_MEMSET]) + struct.pack("<QBQ", dst, val & 0xFF, count)
         with self._lock:
             self._send(payload)
-            r = self._r
-            status = ord(_read_exact(r, 1))
+            status = ord(self._read_exact(1, "memset status"))
             if status == _STATUS_ERR:
-                msg_len = struct.unpack("<I", _read_exact(r, 4))[0]
-                msg = _read_exact(r, msg_len).decode("utf-8", errors="replace")
+                msg_len = struct.unpack("<I", self._read_exact(4, "memset error length"))[0]
+                msg = self._read_exact(msg_len, "memset error message").decode(
+                    "utf-8", errors="replace"
+                )
                 self._drain_streams()
                 raise OSError(msg)
             self._drain_streams()
@@ -665,11 +728,37 @@ def get_var(cdll, ctype, name: str):
     return ctype.in_dll(cdll, name)
 
 
+def _collect_sync_refs(args):
+    refs = []
+    seen = set()
+
+    def visit(obj):
+        if obj is None:
+            return
+        obj_id = id(obj)
+        if obj_id in seen:
+            return
+        seen.add(obj_id)
+        if hasattr(obj, "_sync_back"):
+            refs.append(obj)
+        owner = getattr(obj, "_owner", None)
+        if isinstance(owner, (tuple, list)):
+            for item in owner:
+                visit(item)
+        else:
+            visit(owner)
+
+    for arg in args:
+        visit(arg)
+    return refs
+
+
 class _RemotePointer(int):
-    def __new__(cls, addr, server):
+    def __new__(cls, addr, server, owner=None):
         obj = super().__new__(cls, addr)
         obj._addr = addr
         obj._server = server
+        obj._owner = owner
         return obj
 
 
@@ -707,19 +796,20 @@ def sizeof(obj):
 
 def addressof(obj):
     if isinstance(obj, (RemoteVar, RemoteRef)):
-        return _RemotePointer(obj._addr, obj._server)
+        owner = obj if isinstance(obj, RemoteRef) else None
+        return _RemotePointer(obj._addr, obj._server, owner=owner)
     return ctypes.addressof(obj)
 
 
 def byref(obj, offset=0, cdll=None):
     if isinstance(obj, (RemoteVar, RemoteRef)):
-        return _RemotePointer(obj._addr + offset, obj._server)
+        owner = obj if isinstance(obj, RemoteRef) else None
+        return _RemotePointer(obj._addr + offset, obj._server, owner=owner)
 
     if cdll and hasattr(cdll, "_server"):
-        # Create a remote reference for the local object
         ref = RemoteRef(obj, cdll._server)
         if offset != 0:
-            return _RemotePointer(ref._addr + offset, ref._server)
+            return _RemotePointer(ref._addr + offset, ref._server, owner=ref)
         return ref
 
     if offset == 0:
@@ -729,7 +819,8 @@ def byref(obj, offset=0, cdll=None):
 
 def cast(obj, typ, cdll=None):
     if isinstance(obj, (RemoteVar, RemoteRef)):
-        return RemoteVar(obj._pid if hasattr(obj, "_pid") else -1, obj._addr, typ, server=obj._server)
+        pid = obj._pid if hasattr(obj, "_pid") else -1
+        return RemoteVar(pid, obj._addr, typ, server=obj._server)
 
     if isinstance(obj, int) and cdll and hasattr(cdll, "_server"):
         return RemoteVar(-1, obj, typ, server=cdll._server)
@@ -786,24 +877,11 @@ def pointer(obj, cdll=None):
         raise NotImplementedError("pointer() for RemoteVar is not yet implemented")
 
     if isinstance(obj, RemoteRef):
-        # pointer(remote_obj) needs to allocate remote storage for the pointer
-        if obj._server:
-            ptr_addr = obj._server._rpc_alloc(ctypes.sizeof(ctypes.c_void_p))
-            # Write obj._addr into that storage
-            fmt = "<Q" if ctypes.sizeof(ctypes.c_void_p) == 8 else "<I"
-            data = struct.pack(fmt, obj._addr)
-            obj._server._rpc_write_mem(ptr_addr, data)
-            return RemoteVar(-1, ptr_addr, ctypes.POINTER(obj._ctype), server=obj._server)
+        return _RemotePointer(obj._addr, obj._server, owner=obj)
 
     if cdll and hasattr(cdll, "_server"):
-        # Allocate remote storage for obj address
-        # First we need obj to be remote
         ref = RemoteRef(obj, cdll._server)
-        ptr_addr = cdll._server._rpc_alloc(ctypes.sizeof(ctypes.c_void_p))
-        fmt = "<Q" if ctypes.sizeof(ctypes.c_void_p) == 8 else "<I"
-        data = struct.pack(fmt, ref._addr)
-        cdll._server._rpc_write_mem(ptr_addr, data)
-        return RemoteVar(-1, ptr_addr, ctypes.POINTER(type(obj)), server=cdll._server)
+        return _RemotePointer(ref._addr, ref._server, owner=ref)
 
     return ctypes.pointer(obj)
 

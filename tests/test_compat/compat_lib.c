@@ -36,6 +36,19 @@ int32_t sum_struct(test_struct_t *s) {
     return s->a + (int32_t)s->b;
 }
 
+void set_i32_ptr(int32_t *p, int32_t value) {
+    if (p) *p = value;
+}
+
+void write_byte_ptr(char *p, int32_t value) {
+    if (p) *p = (char)value;
+}
+
+int32_t read_i32_ptr(int32_t *p) {
+    if (!p) return -1;
+    return *p;
+}
+
 typedef struct {
     int32_t x;
     int32_t y;

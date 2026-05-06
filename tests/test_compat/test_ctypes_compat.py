@@ -84,6 +84,63 @@ def test_fallback_cdll_function_attrs_are_cached(compat_lib):
     assert lib.reset_compat.restype is None
 
 
+def test_fallback_byref_local_output_param_syncs(compat_lib):
+    fn = compat_lib.set_i32_ptr
+    fn.argtypes = [ctypes.POINTER(ctypes.c_int32), ctypes.c_int32]
+    fn.restype = None
+
+    value = ctypes.c_int32(1)
+    fn(cdlml.byref(value, cdll=compat_lib), 77)
+
+    assert value.value == 77
+
+
+def test_fallback_byref_offset_keeps_owner_alive_and_syncs(compat_lib):
+    fn = compat_lib.write_byte_ptr
+    fn.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.c_int32]
+    fn.restype = None
+
+    buf = (ctypes.c_char * 4)(*b"abcd")
+    fn(cdlml.byref(buf, 2, cdll=compat_lib), ord("Z"))
+
+    assert bytes(buf) == b"abZd"
+
+
+def test_fallback_pointer_local_keeps_owner_alive_and_syncs(compat_lib):
+    write_fn = compat_lib.set_i32_ptr
+    write_fn.argtypes = [ctypes.POINTER(ctypes.c_int32), ctypes.c_int32]
+    write_fn.restype = None
+    read_fn = compat_lib.read_i32_ptr
+    read_fn.argtypes = [ctypes.POINTER(ctypes.c_int32)]
+    read_fn.restype = ctypes.c_int32
+
+    value = ctypes.c_int32(12)
+
+    assert read_fn(cdlml.pointer(value, cdll=compat_lib)) == 12
+    write_fn(cdlml.pointer(value, cdll=compat_lib), 99)
+    assert value.value == 99
+
+
+def test_fallback_rejects_ctypes_byref_pointer(compat_lib):
+    fn = compat_lib.set_i32_ptr
+    fn.argtypes = [ctypes.POINTER(ctypes.c_int32), ctypes.c_int32]
+    fn.restype = None
+    value = ctypes.c_int32(1)
+
+    with pytest.raises(TypeError, match="ctypes pointer points to Python process memory"):
+        fn(ctypes.byref(value), 2)
+
+
+def test_fallback_eof_error_includes_server_status(compat_lib):
+    src_dir = Path(__file__).resolve().parent
+    lib = cdlml.FallbackPreloadedCDLL(src_dir / "libcompat.so")
+    lib._proc.kill()
+    lib._proc.wait(timeout=2)
+
+    with pytest.raises(EOFError, match="unit-test read"):
+        lib._read_exact(1, "unit-test read")
+
+
 def test_memset_remote(compat_lib):
     compat_lib.reset_compat()
     var = cdlml.get_var(compat_lib, ctypes.c_char * 8, "global_buf")
