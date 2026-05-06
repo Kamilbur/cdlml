@@ -15,6 +15,9 @@ static inline void *
 cdlml_open_init(const char *filename)
 {
     void *handle = dlmopen(_namespace, filename, RTLD_NOW);
+    if (!handle) {
+        return NULL;
+    }
     if (dlinfo(handle, RTLD_DI_LMID, &_namespace) != 0) {
         cdlml_reset();
         dlclose(handle);

@@ -1,9 +1,24 @@
 import ctypes
 from contextlib import contextmanager
+import subprocess
+import sys
 import pytest
 
 
 sizeof_int = ctypes.sizeof(ctypes.c_int)
+
+
+def test_dlmopen_missing_library_raises_without_crash():
+    code = (
+        "from _cdlml import _dlmopen\n"
+        "try:\n"
+        "    _dlmopen('/definitely/missing/libcdlml_missing.so')\n"
+        "except OSError:\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(1)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], check=False)
+    assert result.returncode == 0
 
 
 @contextmanager
