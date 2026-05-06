@@ -10,7 +10,10 @@ sizeof_int = ctypes.sizeof(ctypes.c_int)
 
 def test_dlmopen_missing_library_raises_without_crash():
     code = (
-        "from _cdlml import _dlmopen\n"
+        "try:\n"
+        "    from _cdlml import _dlmopen\n"
+        "except ImportError:\n"
+        "    raise SystemExit(0)\n"
         "try:\n"
         "    _dlmopen('/definitely/missing/libcdlml_missing.so')\n"
         "except OSError:\n"

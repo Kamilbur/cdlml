@@ -24,9 +24,14 @@ static PyObject *py_cdlml_open(PyObject *Py_UNUSED(self), PyObject *args) {
     if (PySys_Audit("cdlml.dlmopen", "O", name) < 0) {
         return NULL;
     }
+    dlerror();
     handle = cdlml_open(filename);
     Py_XDECREF(name2);
     if (!handle) {
+        if (!cdlml_is_supported()) {
+            PyErr_SetString(PyExc_OSError, "dlmopen unavailable on this platform");
+            return NULL;
+        }
         const char *errmsg = dlerror();
         if (errmsg) {
             PyErr_SetString(PyExc_OSError, errmsg);
@@ -43,9 +48,17 @@ static PyObject *py_cdlml_stop(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(ar
     Py_RETURN_NONE;
 }
 
+static PyObject *py_cdlml_is_available(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args)) {
+    if (cdlml_is_supported()) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
 static PyMethodDef Methods[] = {
     {"_dlmopen", py_cdlml_open, METH_VARARGS, "(implemented in C)"},
     {"_dlmstop", py_cdlml_stop, METH_NOARGS, "(implemented in C)"},
+    {"_is_available", py_cdlml_is_available, METH_NOARGS, "(implemented in C)"},
     {NULL, NULL, 0, NULL}
 };
 

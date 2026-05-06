@@ -5,6 +5,12 @@
 
 static Lmid_t _namespace = LM_ID_NEWLM;
 
+int
+cdlml_is_supported(void)
+{
+    return 1;
+}
+
 void
 cdlml_reset(void)
 {
@@ -44,3 +50,23 @@ cdlml_open(const char *filename)
 }
 # endif // __GLIBC__
 #endif // __linux__
+
+#if !defined(__linux__) || !defined(__GLIBC__)
+int
+cdlml_is_supported(void)
+{
+    return 0;
+}
+
+void
+cdlml_reset(void)
+{
+}
+
+void *
+cdlml_open(const char *filename)
+{
+    (void)filename;
+    return NULL;
+}
+#endif

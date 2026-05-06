@@ -11,4 +11,6 @@ void cdlml_reset(void);
 
 void *cdlml_open(const char *filename);
 
+int cdlml_is_supported(void);
+
 #endif // CDLML_H

@@ -35,9 +35,9 @@ __all__ = [
 
 def _has_dlmopen() -> bool:
     try:
-        from _cdlml import _dlmopen as _  # noqa: F401
+        from _cdlml import _is_available
 
-        return True
+        return bool(_is_available())
     except ImportError:
         return False
 
